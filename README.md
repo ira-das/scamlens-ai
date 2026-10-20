@@ -1,1 +1,0 @@
-# scamlens-ai
