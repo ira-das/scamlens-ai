@@ -36,13 +36,19 @@ def extract_claims_regex(text: str) -> ClaimExtraction:
         flags=re.I,
     )
     company = company_match.group(1).strip() if company_match else None
+    if not company and re.search(r"(?im)^\s*TCS\b", text):
+        company = "TCS"
 
-    domain_match = re.search(
-        r"(?<!@)(?:https?://)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,63})(?=$|[/?#\s'\"<>])",
+    email_domain_match = re.search(r"@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)", text)
+    official_domain_match = re.search(
+        r"domain[:\s]+([A-Za-z0-9.-]+\.[a-z]{2,})",
         text,
         flags=re.I,
     )
-    domain = domain_match.group(1).strip().lower() if domain_match else None
+    domain_match = email_domain_match or official_domain_match
+    domain = domain_match.group(1).lower() if domain_match else None
+    if not company and domain == "tcs.com":
+        company = "TCS"
 
     recruiter_name = None
     recruiter_match = re.search(

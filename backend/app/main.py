@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from backend.app.gemini_client import extract_claims_regex
 from backend.app.models import TrustReport
 from backend.app.checks.verification_checks import run_all_checks
-from backend.app.scoring import score_report
+from backend.app.scoring import claim_red_flags, score_report
 
 app = FastAPI(
     title="ScamLens AI",
@@ -62,17 +62,19 @@ async def verify_offer(payload: VerifyRequest) -> dict:
     claims = extract_claims_regex(payload.text)
     checks = await run_all_checks(claims.model_dump())
 
+    claim_data = claims.model_dump()
     risk_score, level = score_report(
-        [check.model_dump() for check in checks]
+        [check.model_dump() for check in checks],
+        claims=claim_data,
     )
 
-    red_flags = []
+    red_flags = claim_red_flags(claim_data)
     for check in checks:
         if check.status in {"bad", "warn"}:
             red_flags.append(check.summary)
 
     report = {
-        "claims": claims.model_dump(),
+        "claims": claim_data,
         "checks": [check.model_dump() for check in checks],
         "risk_score": risk_score,
         "level": level,

@@ -137,17 +137,52 @@ async def run_check_address_and_stipend(
 
 
 async def run_all_checks(claims: Dict[str, Any]) -> List[CheckResult]:
-    domain = claims.get("domain") or "example.com"
-    company = claims.get("company") or "Example Corp"
-    recruiter_name = claims.get("recruiter_name") or "Example Recruiter"
+    domain = claims.get("domain")
+    company = claims.get("company")
+    recruiter_name = claims.get("recruiter_name")
     stipend = claims.get("stipend")
     address = claims.get("address")
     fee_demanded = claims.get("fee_demanded") or 0
 
     return await asyncio.gather(
-        run_check_domain(domain),
-        run_check_company_page(company, domain),
-        run_check_recruiter(recruiter_name, domain),
-        run_check_scam_reports(domain, fee_demanded),
-        run_check_address_and_stipend(stipend, address, domain),
+        run_check_domain(domain) if domain else asyncio.sleep(0, result=CheckResult(
+            name="Domain Age & Registration",
+            tool_used="TinyFish Web Agent",
+            status="error",
+            summary="Domain is unknown; lookup skipped.",
+            risk_points=0,
+            max_points=25,
+        )),
+        run_check_company_page(company, domain) if company or domain else asyncio.sleep(0, result=CheckResult(
+            name="Company & Careers Page Check",
+            tool_used="TinyFish Fetch",
+            status="error",
+            summary="Company could not be identified; lookup skipped.",
+            risk_points=0,
+            max_points=10,
+        )),
+        run_check_recruiter(recruiter_name, domain) if recruiter_name and domain else asyncio.sleep(0, result=CheckResult(
+            name="Recruiter Verification",
+            tool_used="TinyFish Fetch",
+            status="error",
+            summary="Recruiter or company domain is unknown; lookup skipped.",
+            risk_points=0,
+            max_points=15,
+        )),
+        run_check_scam_reports(domain, fee_demanded) if domain or fee_demanded else asyncio.sleep(0, result=CheckResult(
+            name="Scam & Employee Review Reports",
+            tool_used="TinyFish Search",
+            status="error",
+            summary="Domain is unknown and no fee was detected; lookup skipped.",
+            risk_points=0,
+            max_points=25,
+        )),
+        run_check_address_and_stipend(stipend, address, domain) if stipend is not None or address else asyncio.sleep(0, result=CheckResult(
+            name="Address & Stipend Plausibility",
+            tool_used="TinyFish Web Agent",
+            status="error",
+            summary="Address and stipend are unknown; lookup skipped.",
+            risk_points=0,
+            max_points=15,
+        )),
     )

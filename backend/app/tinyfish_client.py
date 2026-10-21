@@ -121,41 +121,64 @@ def _mock_domain_result(domain: str) -> Dict[str, Any]:
     }
 
 
-def _mock_company_result(company: str) -> Dict[str, Any]:
-    if company.lower() in {"tcs", "infosys", "razorpay"}:
+def _mock_company_result(company: str | None, domain: str | None = None) -> Dict[str, Any]:
+    company_name = (company or "").strip()
+    domain_name = (domain or "").strip().lower()
+    known_good = company_name.lower() in {"tcs", "infosys", "razorpay"} or domain_name == "tcs.com"
+    if known_good:
         return {
-            "company": company,
+            "company": company_name or "TCS",
             "status": "ok",
-            "summary": f"{company} has a verifiable public careers presence.",
+            "summary": f"{company_name or 'TCS'} has a known public company presence.",
             "risk_points": 0,
             "max_points": 10,
             "evidence": [
                 {
-                    "label": "Official company page",
-                    "url": f"https://www.google.com/search?q={company}+careers",
+                    "label": "Company lookup",
+                    "url": f"https://www.google.com/search?q={quote(company_name or domain_name)}+careers",
                     "retrieved_at": _iso_now(),
                 }
             ],
         }
 
+    suspicious_domain = domain_name.endswith((".xyz", ".top", ".click", ".site", ".online"))
+    if not company_name and not suspicious_domain:
+        return {
+            "status": "error",
+            "summary": "Company could not be identified; lookup skipped.",
+            "risk_points": 0,
+            "max_points": 10,
+            "evidence": [],
+        }
+
+    search_term = company_name or domain_name
+
     return {
-        "company": company,
+        "company": company_name or None,
         "status": "warn",
-        "summary": "Company page is incomplete or inconsistent.",
+        "summary": "The company identity or claimed domain needs review.",
         "risk_points": 5,
         "max_points": 10,
         "evidence": [
             {
                 "label": "Google search",
-                "url": f"https://www.google.com/search?q={company}+company+careers",
+                "url": f"https://www.google.com/search?q={quote(search_term)}+company+careers",
                 "retrieved_at": _iso_now(),
             }
         ],
     }
 
 
-def _mock_recruiter_result(recruiter_name: str, domain: str) -> Dict[str, Any]:
-    if recruiter_name and domain and "gmail" not in domain.lower():
+def _mock_recruiter_result(recruiter_name: str | None, domain: str | None) -> Dict[str, Any]:
+    if not recruiter_name or not domain:
+        return {
+            "status": "error",
+            "summary": "Recruiter or company domain is unknown; lookup skipped.",
+            "risk_points": 0,
+            "max_points": 15,
+            "evidence": [],
+        }
+    if "gmail" not in domain.lower():
         return {
             "recruiter_name": recruiter_name,
             "status": "ok",
@@ -187,8 +210,11 @@ def _mock_recruiter_result(recruiter_name: str, domain: str) -> Dict[str, Any]:
     }
 
 
-def _mock_review_result(domain: str, fee_demanded: int) -> Dict[str, Any]:
-    flagged = fee_demanded > 0 or ".xyz" in domain.lower() or ".online" in domain.lower()
+def _mock_review_result(domain: str | None, fee_demanded: int) -> Dict[str, Any]:
+    domain_name = (domain or "").strip().lower()
+    suspicious_tld = domain_name.endswith((".xyz", ".top", ".click", ".site", ".online"))
+    flagged = fee_demanded > 0 or suspicious_tld
+    query = f"{domain_name} job scam complaint" if domain_name else "job offer upfront fee scam complaint"
 
     if flagged:
         return {
@@ -200,7 +226,7 @@ def _mock_review_result(domain: str, fee_demanded: int) -> Dict[str, Any]:
             "evidence": [
                 {
                     "label": "Scam report search",
-                    "url": f"https://www.google.com/search?q={domain}+job+scam+complaint",
+                    "url": f"https://www.google.com/search?q={quote(query)}",
                     "retrieved_at": _iso_now(),
                 }
             ],
@@ -215,7 +241,7 @@ def _mock_review_result(domain: str, fee_demanded: int) -> Dict[str, Any]:
         "evidence": [
             {
                 "label": "Scam report search",
-                "url": f"https://www.google.com/search?q={domain}+job+scam+complaint",
+                    "url": f"https://www.google.com/search?q={quote(query)}",
                 "retrieved_at": _iso_now(),
             }
         ],
@@ -488,7 +514,7 @@ def web_agent(
     if domain:
         return _mock_domain_result(domain)
     if company:
-        return _mock_company_result(company)
+        return _mock_company_result(company, company_domain)
     return _mock_address_stipend_result(stipend, address)
 
 
@@ -498,7 +524,7 @@ def search(domain: str | None = None, fee_demanded: int | None = None) -> Dict[s
             return _run_search(domain or "example.com", fee_demanded or 0)
         except Exception as error:
             return _error_result(f"TinyFish Search failed: {error}", 25)
-    return _mock_review_result(domain or "example.com", fee_demanded or 0)
+    return _mock_review_result(domain, fee_demanded or 0)
 
 
 def fetch(company: str | None = None, recruiter_name: str | None = None, domain: str | None = None) -> Dict[str, Any]:
@@ -512,9 +538,9 @@ def fetch(company: str | None = None, recruiter_name: str | None = None, domain:
         except Exception as error:
             return _error_result(f"TinyFish Fetch failed: {error}", 15)
     if recruiter_name:
-        return _mock_recruiter_result(recruiter_name, domain or "example.com")
-    if company:
-        return _mock_company_result(company)
+        return _mock_recruiter_result(recruiter_name, domain)
+    if company or domain:
+        return _mock_company_result(company, domain)
     return {
         "status": "ok",
         "summary": "No fetch result available.",
