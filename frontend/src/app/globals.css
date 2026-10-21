@@ -1,8 +1,12 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+  --background: #050a16;
+  --foreground: #e8f1ff;
+  --muted: #91a2bd;
+  --cyan: #22d3ee;
+  --blue: #3b82f6;
 }
 
 @theme inline {
@@ -12,15 +16,113 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
+  min-height: 100%;
+  background:
+    radial-gradient(ellipse at 48% -30%, rgba(14, 116, 144, 0.2), transparent 48%),
+    linear-gradient(145deg, #07111f 0%, #050a16 48%, #081226 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), sans-serif;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  color: #031018;
+  background: #67e8f9;
+}
+
+.ambient-orb {
+  position: fixed;
+  z-index: -1;
+  width: 26rem;
+  aspect-ratio: 1;
+  pointer-events: none;
+  border-radius: 9999px;
+  filter: blur(100px);
+  opacity: 0.14;
+}
+
+.ambient-orb-cyan {
+  top: 8rem;
+  left: -16rem;
+  background: #06b6d4;
+}
+
+.ambient-orb-blue {
+  top: 36rem;
+  right: -17rem;
+  background: #2563eb;
+}
+
+.fade-slide-in {
+  animation: fade-slide-in 480ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+.scan-line {
+  animation: scan-line 1.8s ease-in-out infinite;
+}
+
+.logo-pulse {
+  animation: logo-pulse 3.2s ease-in-out infinite;
+}
+
+.check-reveal {
+  animation: fade-slide-in 420ms cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+@keyframes fade-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scan-line {
+  0%,
+  100% {
+    transform: translateY(-130%);
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(130%);
+  }
+}
+
+@keyframes logo-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
