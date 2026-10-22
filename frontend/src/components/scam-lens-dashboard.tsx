@@ -56,7 +56,7 @@ export default function ScamLensDashboard() {
     const timeoutId = window.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, 30_000);
+    }, 60_000);
 
     try {
       const response = await fetch(`${apiBaseUrl}/api/verify`, {
