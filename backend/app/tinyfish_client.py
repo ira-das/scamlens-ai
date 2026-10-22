@@ -7,10 +7,27 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 from urllib.parse import quote, urlencode
 
-USE_MOCKS = os.getenv("USE_MOCKS", "true").lower() == "true"
-AGENT_TIMEOUT_SECONDS = 120
-SEARCH_TIMEOUT_SECONDS = 10
-FETCH_TIMEOUT_SECONDS = 150
+def _requested_mock_mode() -> bool:
+    value = os.getenv("USE_MOCKS", "true").strip().lower()
+    return value not in {"false", "0", "no"}
+
+
+USE_MOCKS = _requested_mock_mode()
+DISABLE_AGENT_CHECKS = os.getenv("DISABLE_AGENT_CHECKS", "false").strip().lower() in {
+    "true",
+    "1",
+    "yes",
+}
+AGENT_TIMEOUT_SECONDS = 20
+SEARCH_TIMEOUT_SECONDS = 20
+FETCH_TIMEOUT_SECONDS = 20
+
+
+def configure_runtime(use_mocks: bool, disable_agent_checks: bool) -> None:
+    """Set safe runtime mode after loading the repository environment."""
+    global USE_MOCKS, DISABLE_AGENT_CHECKS
+    USE_MOCKS = use_mocks
+    DISABLE_AGENT_CHECKS = disable_agent_checks
 
 
 def _iso_now() -> str:
@@ -29,8 +46,8 @@ def _create_client():
 
     return TinyFish(
         api_key=os.environ["TINYFISH_API_KEY"],
-        timeout=FETCH_TIMEOUT_SECONDS,
-        max_retries=2,
+        timeout=20,
+        max_retries=0,
     )
 
 
@@ -310,8 +327,9 @@ def _run_domain_agent(domain: str) -> Dict[str, Any]:
         age_days = None
 
     if run_status != "COMPLETED" or run_error or age_days is None:
-        message = _field(run_error, "message", "TinyFish did not return a usable domain age.")
-        return _error_result(str(message), 25) | {"evidence": _evidence("WHOIS lookup", source_url)}
+        return _error_result("TinyFish Agent could not complete the domain check.", 25) | {
+            "evidence": _evidence("WHOIS lookup", source_url)
+        }
 
     if age_days < 30:
         status, risk_points, summary = "bad", 25, f"Domain registration is very recent ({age_days} days old)."
@@ -365,8 +383,7 @@ def _run_plausibility_agent(
     run_error = _field(result, "error")
     data = _as_dict(_field(result, "result"))
     if run_status != "COMPLETED" or run_error or not data:
-        message = _field(run_error, "message", "TinyFish did not return a usable address/stipend result.")
-        return _error_result(str(message), 15)
+        return _error_result("TinyFish Agent could not complete the address and stipend check.", 15)
 
     flagged = bool(data.get("unusually_high_stipend") or data.get("residential_address"))
     source_urls = data.get("source_urls", [])
@@ -389,8 +406,7 @@ def _run_fetch(url: str, label: str) -> tuple[dict[str, Any] | None, str | None]
     results = _field(response, "results", []) or []
     errors = _field(response, "errors", []) or []
     if not results:
-        first_error = errors[0] if errors else None
-        return None, str(_field(first_error, "error", "TinyFish Fetch returned no page content."))
+        return None, "TinyFish Fetch did not return page content."
     page = results[0]
     return {
         "url": _field(page, "final_url", _field(page, "url", url)),
@@ -496,6 +512,11 @@ def _run_search(domain: str, fee_demanded: int) -> Dict[str, Any]:
     }
 
 
+# Agent API: domain age/registration and address/stipend plausibility.
+# Search API: scam and employee-review reports.
+# Fetch API: company/careers page and recruiter verification.
+
+
 def web_agent(
     domain: str | None = None,
     company: str | None = None,
@@ -503,6 +524,9 @@ def web_agent(
     address: str | None = None,
     company_domain: str | None = None,
 ) -> Dict[str, Any]:
+    if DISABLE_AGENT_CHECKS:
+        max_points = 25 if domain else 15
+        return _error_result("Agent checks disabled", max_points)
     if not USE_MOCKS:
         if domain:
             return _run_domain_agent(domain)
@@ -522,8 +546,8 @@ def search(domain: str | None = None, fee_demanded: int | None = None) -> Dict[s
     if not USE_MOCKS:
         try:
             return _run_search(domain or "example.com", fee_demanded or 0)
-        except Exception as error:
-            return _error_result(f"TinyFish Search failed: {error}", 25)
+        except Exception:
+            return _error_result("TinyFish Search check failed.", 25)
     return _mock_review_result(domain, fee_demanded or 0)
 
 
@@ -535,8 +559,8 @@ def fetch(company: str | None = None, recruiter_name: str | None = None, domain:
             if company:
                 return _run_company_fetch(company, domain)
             return _error_result("A company or recruiter was not provided.", 15)
-        except Exception as error:
-            return _error_result(f"TinyFish Fetch failed: {error}", 15)
+        except Exception:
+            return _error_result("TinyFish Fetch check failed.", 15)
     if recruiter_name:
         return _mock_recruiter_result(recruiter_name, domain)
     if company or domain:

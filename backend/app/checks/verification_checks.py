@@ -34,15 +34,15 @@ async def _call_adapter(
     except asyncio.TimeoutError:
         return {
             "status": "error",
-            "summary": f"TinyFish check timed out after {timeout_seconds} seconds.",
+            "summary": "TinyFish check timed out.",
             "risk_points": 0,
             "max_points": max_points,
             "evidence": [],
         }
-    except Exception as error:
+    except Exception:
         return {
             "status": "error",
-            "summary": f"TinyFish check failed: {error}",
+            "summary": "TinyFish check failed.",
             "risk_points": 0,
             "max_points": max_points,
             "evidence": [],

@@ -11,11 +11,33 @@ const apiBaseUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000").
 
 export default function ScamLensDashboard() {
   const [text, setText] = useState("");
+  const [mode, setMode] = useState<"live" | "mock" | null>(null);
   const [report, setReport] = useState<TrustReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiBaseUrl}/health`, { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Health check unavailable");
+        return response.json() as Promise<{ mode?: unknown }>;
+      })
+      .then((health) => {
+        if (active && (health.mode === "live" || health.mode === "mock")) {
+          setMode(health.mode);
+        }
+      })
+      .catch(() => {
+        if (active) setMode(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!report || !resultsRef.current) return;
@@ -87,10 +109,16 @@ export default function ScamLensDashboard() {
             </span>
             <span className="text-sm font-semibold tracking-wide text-slate-100">ScamLens <span className="text-cyan-300">AI</span></span>
           </a>
-          <span className="inline-flex items-center gap-2 rounded-full border border-cyan-300/15 bg-cyan-300/[0.045] px-3 py-1.5 font-mono text-[10px] text-cyan-100/75">
-            <span className="size-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.8)]" />
-            Demo mode: simulated lookups
-          </span>
+          {mode && (
+            <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-[10px] ${
+              mode === "live"
+                ? "border-cyan-300/20 bg-cyan-300/[0.06] text-cyan-100"
+                : "border-slate-400/20 bg-slate-400/[0.06] text-slate-300"
+            }`}>
+              <span className={`size-1.5 rounded-full ${mode === "live" ? "bg-cyan-300" : "bg-slate-400"}`} />
+              {mode === "live" ? "Live mode" : "Demo mode"}
+            </span>
+          )}
         </header>
 
         <section id="top" className="pb-8 pt-10 text-center sm:pb-10 sm:pt-14">

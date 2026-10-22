@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import logging
 import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Deque
 
 from dotenv import load_dotenv
@@ -12,8 +14,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-load_dotenv()
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(REPOSITORY_ROOT / ".env", override=False)
 
+from backend.app import tinyfish_client
 from backend.app.checks.verification_checks import run_all_checks
 from backend.app.gemini_client import extract_claims_regex
 from backend.app.scoring import claim_red_flags, score_report
@@ -22,6 +26,7 @@ DEFAULT_ALLOWED_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 )
+logger = logging.getLogger("uvicorn.error")
 
 
 class VerifyRequest(BaseModel):
@@ -75,16 +80,36 @@ def get_allowed_origin_regex() -> str | None:
     return configured or None
 
 
+def resolve_runtime_mode() -> str:
+    """Resolve mock/live mode without exposing whether a key is present in logs."""
+    use_mocks_value = os.getenv("USE_MOCKS", "true").strip().lower()
+    live_requested = use_mocks_value in {"false", "0", "no"}
+    api_key_is_set = bool(os.getenv("TINYFISH_API_KEY", "").strip())
+    if live_requested and not api_key_is_set:
+        logger.warning("Live mode requested but TINYFISH_API_KEY is not set; using mocks")
+        return "mock"
+    return "live" if live_requested else "mock"
+
+
 def create_app() -> FastAPI:
     """Create the ScamLens API with CORS configured from the environment."""
     allowed_origins = get_allowed_origins()
     allowed_origin_regex = get_allowed_origin_regex()
+    mode = resolve_runtime_mode()
+    disable_agent_checks = os.getenv("DISABLE_AGENT_CHECKS", "false").strip().lower() in {
+        "true",
+        "1",
+        "yes",
+    }
+    tinyfish_client.configure_runtime(mode == "mock", disable_agent_checks)
+    logger.info("ScamLens mode: %s", mode.upper())
     rate_limiter = InMemoryRateLimiter()
     application = FastAPI(
         title="ScamLens AI",
         version="0.1.0",
         description="ScamLens AI backend",
     )
+    application.state.mode = mode
     application.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -96,7 +121,7 @@ def create_app() -> FastAPI:
 
     @application.get("/health")
     def health_check() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "mode": mode}
 
     @application.post("/api/verify")
     async def verify_offer(payload: VerifyRequest, request: Request) -> dict:
@@ -124,7 +149,11 @@ def create_app() -> FastAPI:
             "risk_score": risk_score,
             "level": level,
             "red_flags": red_flags,
-            "summary": "Offer reviewed with mock checks.",
+            "summary": (
+                "Offer reviewed with live TinyFish checks."
+                if mode == "live"
+                else "Offer reviewed with mock checks."
+            ),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
