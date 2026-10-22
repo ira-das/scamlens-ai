@@ -8,8 +8,10 @@ from backend.app.models import CheckResult
 from backend.app.tinyfish_client import (
     AGENT_TIMEOUT_SECONDS,
     FETCH_TIMEOUT_SECONDS,
+    RDAP_TIMEOUT_SECONDS,
     SEARCH_TIMEOUT_SECONDS,
     fetch,
+    lookup_domain_registration,
     search,
     web_agent,
 )
@@ -79,12 +81,12 @@ def _check_result(
 
 async def run_check_domain(domain: str) -> CheckResult:
     raw = await _call_adapter(
-        web_agent,
-        AGENT_TIMEOUT_SECONDS,
+        lookup_domain_registration,
+        RDAP_TIMEOUT_SECONDS,
         25,
         domain=domain,
     )
-    return _check_result("Domain Age & Registration", "TinyFish Web Agent", raw, 25)
+    return _check_result("Domain Age & Registration", "RDAP", raw, 25)
 
 
 async def run_check_company_page(company: str | None, domain: str | None = None) -> CheckResult:

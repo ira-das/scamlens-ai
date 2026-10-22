@@ -3,9 +3,11 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict
 from urllib.parse import quote, urlencode
+
+import httpx
 
 def _requested_mock_mode() -> bool:
     value = os.getenv("USE_MOCKS", "true").strip().lower()
@@ -18,9 +20,10 @@ DISABLE_AGENT_CHECKS = os.getenv("DISABLE_AGENT_CHECKS", "false").strip().lower(
     "1",
     "yes",
 }
-AGENT_TIMEOUT_SECONDS = 20
+AGENT_TIMEOUT_SECONDS = 45
 SEARCH_TIMEOUT_SECONDS = 20
 FETCH_TIMEOUT_SECONDS = 20
+RDAP_TIMEOUT_SECONDS = 8
 
 
 def configure_runtime(use_mocks: bool, disable_agent_checks: bool) -> None:
@@ -34,7 +37,7 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _create_client():
+def _create_client(timeout_seconds: int = 20):
     """Create the official SDK client, which reads TINYFISH_API_KEY from env."""
     if not os.getenv("TINYFISH_API_KEY"):
         raise RuntimeError("TINYFISH_API_KEY is required when USE_MOCKS=false.")
@@ -46,7 +49,7 @@ def _create_client():
 
     return TinyFish(
         api_key=os.environ["TINYFISH_API_KEY"],
-        timeout=20,
+        timeout=timeout_seconds,
         max_retries=0,
     )
 
@@ -258,56 +261,6 @@ def _mock_address_stipend_result(stipend: int | None, address: str | None) -> Di
     }
 
 
-def _run_domain_agent(domain: str) -> Dict[str, Any]:
-    domain = _valid_domain(domain)
-    source_url = f"https://who.is/whois/{domain}"
-    result = _create_client().agent.run(
-        url=source_url,
-        goal=(
-            "Inspect the WHOIS information shown on this page. Return the domain's age in days "
-            "and its registration date if visible. Do not infer missing values."
-        ),
-        output_schema={
-            "type": "object",
-            "properties": {
-                "age_days": {"type": "integer"},
-                "registration_date": {"type": "string"},
-            },
-            "required": ["age_days"],
-        },
-    )
-    run_status = str(getattr(_field(result, "status", ""), "value", _field(result, "status", ""))).upper()
-    run_error = _field(result, "error")
-    data = _as_dict(_field(result, "result"))
-    age_days = data.get("age_days")
-    try:
-        age_days = int(age_days)
-    except (TypeError, ValueError):
-        age_days = None
-
-    if run_status != "COMPLETED" or run_error or age_days is None:
-        return _error_result("TinyFish Agent could not complete the domain check.", 25) | {
-            "evidence": _evidence("WHOIS lookup", source_url)
-        }
-
-    if age_days < 30:
-        status, risk_points, summary = "bad", 25, f"Domain registration is very recent ({age_days} days old)."
-    elif age_days < 180:
-        status, risk_points, summary = "warn", 12, f"Domain registration is relatively recent ({age_days} days old)."
-    else:
-        status, risk_points, summary = "ok", 0, f"Domain age returned by WHOIS lookup: {age_days} days."
-
-    return {
-        "age_days": age_days,
-        "registration_date": data.get("registration_date"),
-        "status": status,
-        "summary": summary,
-        "risk_points": risk_points,
-        "max_points": 25,
-        "evidence": _evidence("WHOIS lookup", source_url),
-    }
-
-
 def _run_plausibility_agent(
     stipend: int | None,
     address: str | None,
@@ -318,7 +271,7 @@ def _run_plausibility_agent(
         query += f" { _valid_domain(company_domain) }"
     source_url = f"https://www.google.com/search?{urlencode({'q': query})}"
     claims = json.dumps({"stipend_inr": stipend, "address": address}, ensure_ascii=True)
-    result = _create_client().agent.run(
+    result = _create_client(timeout_seconds=AGENT_TIMEOUT_SECONDS).agent.run(
         url=source_url,
         goal=(
             "Compare this offer's stipend and address against information on the page and other "
@@ -496,7 +449,7 @@ def _run_search(domain: str, fee_demanded: int) -> Dict[str, Any]:
     }
 
 
-# Agent API: domain age/registration and address/stipend plausibility.
+# Agent API: address/stipend plausibility only.
 # Search API: scam/employee reports and recruiter/company name lookups.
 # Fetch API: the claimed company/careers domain page.
 
@@ -509,18 +462,13 @@ def web_agent(
     company_domain: str | None = None,
 ) -> Dict[str, Any]:
     if DISABLE_AGENT_CHECKS:
-        max_points = 25 if domain else 15
-        return _error_result("Agent checks disabled", max_points)
+        return _error_result("Agent checks disabled", 15)
     if not USE_MOCKS:
-        if domain:
-            return _run_domain_agent(domain)
         if company:
             return _run_company_fetch(company, company_domain)
         if stipend is not None or address:
             return _run_plausibility_agent(stipend, address, company_domain)
-        return _error_result("No domain, company, address, or stipend was provided.", 25)
-    if domain:
-        return _mock_domain_result(domain)
+        return _error_result("Address and stipend are unknown.", 15)
     if company:
         return _mock_company_result(company, company_domain)
     return _mock_address_stipend_result(stipend, address)
@@ -582,3 +530,99 @@ def fetch(company: str | None = None, recruiter_name: str | None = None, domain:
         "max_points": 0,
         "evidence": [],
     }
+
+
+def _registration_result(domain: str, registration_date: date) -> Dict[str, Any]:
+    days_old = (datetime.now(timezone.utc).date() - registration_date).days
+    if days_old < 0:
+        return {
+            "status": "warn",
+            "summary": "No registration record found for this domain; treat as suspicious.",
+            "risk_points": 10,
+            "max_points": 25,
+            "evidence": [],
+        }
+
+    if days_old < 90:
+        status, risk_points = "bad", 25
+    elif days_old < 365:
+        status, risk_points = "warn", 10
+    else:
+        status, risk_points = "ok", 0
+
+    rdap_url = f"https://rdap.org/domain/{domain}"
+    return {
+        "status": status,
+        "summary": f"Domain registered on {registration_date.isoformat()} ({days_old} days ago).",
+        "risk_points": risk_points,
+        "max_points": 25,
+        "evidence": _evidence("RDAP registration record", rdap_url),
+    }
+
+
+def lookup_domain_registration(domain: str) -> Dict[str, Any]:
+    """Look up a domain's registration event via RDAP or deterministic mocks."""
+    domain = _valid_domain(domain)
+    rdap_url = f"https://rdap.org/domain/{domain}"
+    if USE_MOCKS:
+        suspicious = any(
+            marker in domain.lower()
+            for marker in (".xyz", ".top", ".click", ".site", ".online", "internship")
+        )
+        mock_age_days = 12 if suspicious else 500
+        mock_registration_date = datetime.now(timezone.utc).date() - timedelta(days=mock_age_days)
+        return _registration_result(domain, mock_registration_date)
+
+    try:
+        response = httpx.get(rdap_url, follow_redirects=True, timeout=RDAP_TIMEOUT_SECONDS)
+        if response.status_code == 404:
+            return {
+                "status": "warn",
+                "summary": "No registration record found for this domain; treat as suspicious.",
+                "risk_points": 10,
+                "max_points": 25,
+                "evidence": _evidence("RDAP lookup", rdap_url),
+            }
+        response.raise_for_status()
+    except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError):
+        return _error_result("Domain registration lookup failed.", 25)
+
+    try:
+        payload = response.json()
+        events = payload.get("events", []) if isinstance(payload, dict) else []
+    except (ValueError, AttributeError):
+        events = []
+
+    registration_event = next(
+        (
+            event
+            for event in events
+            if isinstance(event, dict)
+            and str(event.get("eventAction", "")).lower() == "registration"
+        ),
+        None,
+    )
+    event_date = registration_event.get("eventDate") if registration_event else None
+    if not isinstance(event_date, str) or not event_date.strip():
+        return {
+            "status": "warn",
+            "summary": "No registration record found for this domain; treat as suspicious.",
+            "risk_points": 10,
+            "max_points": 25,
+            "evidence": _evidence("RDAP lookup", rdap_url),
+        }
+
+    try:
+        registration_date = datetime.fromisoformat(event_date.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            registration_date = date.fromisoformat(event_date[:10])
+        except ValueError:
+            return {
+                "status": "warn",
+                "summary": "No registration record found for this domain; treat as suspicious.",
+                "risk_points": 10,
+                "max_points": 25,
+                "evidence": _evidence("RDAP lookup", rdap_url),
+            }
+    return _registration_result(domain, registration_date)

@@ -75,9 +75,10 @@ def test_one_live_check_failure_does_not_fail_other_checks(monkeypatch):
         ),
     )
 
-    def failing_agent(**kwargs):
-        if kwargs.get("domain"):
-            raise RuntimeError("private upstream details")
+    def failing_rdap(**kwargs):
+        raise RuntimeError("private upstream details")
+
+    def successful_agent(**kwargs):
         return {
             "status": "ok",
             "summary": "Plausibility check completed.",
@@ -104,7 +105,8 @@ def test_one_live_check_failure_does_not_fail_other_checks(monkeypatch):
             "evidence": [],
         }
 
-    monkeypatch.setattr(verification_checks, "web_agent", failing_agent)
+    monkeypatch.setattr(verification_checks, "lookup_domain_registration", failing_rdap)
+    monkeypatch.setattr(verification_checks, "web_agent", successful_agent)
     monkeypatch.setattr(verification_checks, "fetch", successful_fetch)
     monkeypatch.setattr(verification_checks, "search", successful_search)
 
@@ -137,9 +139,9 @@ def test_disabled_agent_checks_never_call_agent(monkeypatch):
     def unexpected_agent_call(**kwargs):
         raise AssertionError("Agent adapter must not be called")
 
-    monkeypatch.setattr(tinyfish_client, "_run_domain_agent", unexpected_agent_call)
+    monkeypatch.setattr(tinyfish_client, "_run_plausibility_agent", unexpected_agent_call)
 
-    result = tinyfish_client.web_agent(domain="example.com")
+    result = tinyfish_client.web_agent(stipend=12000, address="Bengaluru")
 
     assert result["status"] == "error"
     assert result["risk_points"] == 0

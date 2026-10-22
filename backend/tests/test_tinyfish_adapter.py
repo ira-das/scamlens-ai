@@ -39,29 +39,6 @@ class FakeFetch:
         return self.response
 
 
-def test_agent_domain_check_uses_public_whois_lookup(monkeypatch):
-    agent = FakeAgent(
-        SimpleNamespace(
-            status="COMPLETED",
-            result={"age_days": 12, "registration_date": "2026-10-01"},
-            error=None,
-        )
-    )
-    monkeypatch.setattr(tinyfish_client, "USE_MOCKS", False)
-    monkeypatch.setattr(
-        tinyfish_client,
-        "_create_client",
-        lambda: SimpleNamespace(agent=agent),
-    )
-
-    result = tinyfish_client.web_agent(domain="example.com")
-
-    assert result["age_days"] == 12
-    assert result["status"] == "bad"
-    assert agent.calls[0]["url"] == "https://who.is/whois/example.com"
-    assert result["evidence"][0]["url"] == agent.calls[0]["url"]
-
-
 def test_search_results_become_evidence_links(monkeypatch):
     search = FakeSearch(
         SimpleNamespace(
@@ -115,7 +92,7 @@ def test_company_fetch_uses_claimed_domain(monkeypatch):
     assert result["evidence"][0]["url"] == "https://example.com"
 
 
-def test_agent_failure_is_isolated_to_one_check(monkeypatch):
+def test_address_agent_failure_is_isolated_to_its_check(monkeypatch):
     agent = FakeAgent(
         SimpleNamespace(
             status="FAILED",
@@ -124,16 +101,26 @@ def test_agent_failure_is_isolated_to_one_check(monkeypatch):
         )
     )
     monkeypatch.setattr(tinyfish_client, "USE_MOCKS", False)
+    monkeypatch.setattr(tinyfish_client, "DISABLE_AGENT_CHECKS", False)
+    client_options = {}
+
+    def create_client(**kwargs):
+        client_options.update(kwargs)
+        return SimpleNamespace(agent=agent)
+
     monkeypatch.setattr(
         tinyfish_client,
         "_create_client",
-        lambda: SimpleNamespace(agent=agent),
+        create_client,
     )
 
-    check = asyncio.run(run_check_domain("example.com"))
+    check = asyncio.run(
+        verification_checks.run_check_address_and_stipend(12000, "Bengaluru")
+    )
 
     assert check.status == "error"
-    assert check.name == "Domain Age & Registration"
+    assert check.name == "Address & Stipend Plausibility"
+    assert client_options == {"timeout_seconds": 45}
 
 
 def test_company_page_check_uses_fetch_adapter(monkeypatch):
@@ -221,8 +208,8 @@ def test_adapter_timeout_becomes_error_result(monkeypatch):
 def test_mock_domain_lookup_keeps_deterministic_verdict(monkeypatch):
     monkeypatch.setattr(tinyfish_client, "USE_MOCKS", True)
 
-    first = tinyfish_client.web_agent(domain="internship-portal.xyz")
-    second = tinyfish_client.web_agent(domain="internship-portal.xyz")
+    first = tinyfish_client.lookup_domain_registration("internship-portal.xyz")
+    second = tinyfish_client.lookup_domain_registration("internship-portal.xyz")
 
     assert first["status"] == second["status"] == "bad"
     assert first["risk_points"] == second["risk_points"] == 25
