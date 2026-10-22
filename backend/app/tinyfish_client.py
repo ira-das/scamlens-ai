@@ -186,47 +186,6 @@ def _mock_company_result(company: str | None, domain: str | None = None) -> Dict
     }
 
 
-def _mock_recruiter_result(recruiter_name: str | None, domain: str | None) -> Dict[str, Any]:
-    if not recruiter_name or not domain:
-        return {
-            "status": "error",
-            "summary": "Recruiter or company domain is unknown; lookup skipped.",
-            "risk_points": 0,
-            "max_points": 15,
-            "evidence": [],
-        }
-    if "gmail" not in domain.lower():
-        return {
-            "recruiter_name": recruiter_name,
-            "status": "ok",
-            "summary": "Recruiter identity and company match is plausible.",
-            "risk_points": 0,
-            "max_points": 15,
-            "evidence": [
-                {
-                    "label": "LinkedIn recruiter profile",
-                    "url": f"https://www.linkedin.com/search/results/all/?keywords={recruiter_name}",
-                    "retrieved_at": _iso_now(),
-                }
-            ],
-        }
-
-    return {
-        "recruiter_name": recruiter_name,
-        "status": "bad",
-        "summary": "Recruiter does not appear to belong to the company or uses a free-mail alias.",
-        "risk_points": 15,
-        "max_points": 15,
-        "evidence": [
-            {
-                "label": "LinkedIn recruiter profile",
-                "url": f"https://www.linkedin.com/search/results/all/?keywords={recruiter_name}",
-                "retrieved_at": _iso_now(),
-            }
-        ],
-    }
-
-
 def _mock_review_result(domain: str | None, fee_demanded: int) -> Dict[str, Any]:
     domain_name = (domain or "").strip().lower()
     suspicious_tld = domain_name.endswith((".xyz", ".top", ".click", ".site", ".online"))
@@ -415,7 +374,10 @@ def _run_fetch(url: str, label: str) -> tuple[dict[str, Any] | None, str | None]
     }, None
 
 
-def _run_company_fetch(company: str, domain: str | None) -> Dict[str, Any]:
+def _run_company_fetch(company: str | None, domain: str | None) -> Dict[str, Any]:
+    if not company and not domain:
+        return _error_result("No company name or domain was found in the offer.", 10)
+
     if not domain:
         return {
             "status": "warn",
@@ -426,12 +388,19 @@ def _run_company_fetch(company: str, domain: str | None) -> Dict[str, Any]:
         }
     domain = _valid_domain(domain)
     requested_url = f"https://{domain}"
-    page, error = _run_fetch(requested_url, f"Check the public company careers page for {company}.")
-    if error or not page:
-        return _error_result(error or "Company page could not be fetched.", 10)
+    company_name = (company or domain).strip()
+    page, error = _run_fetch(requested_url, f"Check the public company careers page for {company_name}.")
+    if error or not page or not (page["title"].strip() or page["text"].strip()):
+        return {
+            "status": "warn",
+            "summary": "The claimed domain could not be loaded or has no company page; treat as suspicious.",
+            "risk_points": 5,
+            "max_points": 10,
+            "evidence": _evidence("Claimed domain", requested_url),
+        }
 
     content = f"{page['title']} {page['text']}".lower()
-    company_terms = [part.lower() for part in company.split() if len(part) > 2]
+    company_terms = [part.lower() for part in company_name.split() if len(part) > 2]
     domain_brand = domain.split(".")[0].replace("-", " ").lower()
     careers_found = any(term in content for term in ("career", "job", "internship", "vacanc"))
     identity_found = not company_terms or any(term in content for term in company_terms) or domain_brand in content
@@ -448,27 +417,42 @@ def _run_company_fetch(company: str, domain: str | None) -> Dict[str, Any]:
     }
 
 
-def _run_recruiter_fetch(recruiter_name: str, domain: str | None) -> Dict[str, Any]:
-    query = quote(recruiter_name.strip())
-    requested_url = f"https://www.linkedin.com/search/results/all/?keywords={query}"
-    page, error = _run_fetch(requested_url, "Check whether the recruiter is associated with the claimed company.")
-    if error or not page:
-        return _error_result(error or "Recruiter page could not be fetched.", 15)
+def _run_recruiter_search(
+    recruiter_name: str,
+    company: str | None,
+    domain: str | None,
+) -> Dict[str, Any]:
+    company_or_domain = company or domain or "company unknown"
+    query = f"{recruiter_name.strip()} {company_or_domain}"
+    response = _create_client().search.query(
+        query=query,
+        location="IN",
+        language="en",
+        purpose="Find public information about this recruiter and company. Search results are leads, not identity verification.",
+    )
+    results = _field(response, "results", []) or []
+    evidence = []
+    result_titles = []
+    for result in results[:5]:
+        title = str(_field(result, "title", "")).strip()
+        snippet = str(_field(result, "snippet", "")).strip()
+        if title:
+            result_titles.append(title)
+        evidence.extend(_evidence(title or "Recruiter search result", _field(result, "url")))
 
-    content = f"{page['title']} {page['text']}".lower()
-    name_found = recruiter_name.lower() in content
-    domain_brand = domain.split(".")[0].replace("-", " ").lower() if domain else ""
-    company_found = bool(domain_brand and domain_brand in content)
-    if name_found and company_found:
-        status, risk_points, summary = "ok", 0, "The fetched recruiter result contains both the recruiter name and claimed company domain."
+    if result_titles:
+        details = "; ".join(result_titles[:3])
+        summary = f"Public search found: {details}. These results are leads and do not verify recruiter identity."
+    elif results:
+        summary = "Public search results were found, but they do not verify recruiter identity."
     else:
-        status, risk_points, summary = "warn", 8, "The fetched recruiter result did not confirm both the recruiter and claimed company."
+        summary = "No public recruiter search results were returned; recruiter identity was not verified."
     return {
-        "status": status,
+        "status": "warn",
         "summary": summary,
-        "risk_points": risk_points,
+        "risk_points": 0,
         "max_points": 15,
-        "evidence": _evidence("Fetched recruiter search page", page["url"]),
+        "evidence": evidence,
     }
 
 
@@ -513,8 +497,8 @@ def _run_search(domain: str, fee_demanded: int) -> Dict[str, Any]:
 
 
 # Agent API: domain age/registration and address/stipend plausibility.
-# Search API: scam and employee-review reports.
-# Fetch API: company/careers page and recruiter verification.
+# Search API: scam/employee reports and recruiter/company name lookups.
+# Fetch API: the claimed company/careers domain page.
 
 
 def web_agent(
@@ -542,27 +526,53 @@ def web_agent(
     return _mock_address_stipend_result(stipend, address)
 
 
-def search(domain: str | None = None, fee_demanded: int | None = None) -> Dict[str, Any]:
+def search(
+    domain: str | None = None,
+    fee_demanded: int | None = None,
+    recruiter_name: str | None = None,
+    company: str | None = None,
+) -> Dict[str, Any]:
     if not USE_MOCKS:
         try:
+            if recruiter_name:
+                return _run_recruiter_search(recruiter_name, company, domain)
             return _run_search(domain or "example.com", fee_demanded or 0)
         except Exception:
+            if recruiter_name:
+                return _error_result(
+                    "Could not verify recruiter online (the source blocked automated access).",
+                    15,
+                )
             return _error_result("TinyFish Search check failed.", 25)
+    if recruiter_name:
+        query = f"{recruiter_name} {company or domain or 'company unknown'}"
+        return {
+            "status": "warn",
+            "summary": "Mock recruiter search results are simulated and do not verify recruiter identity.",
+            "risk_points": 0,
+            "max_points": 15,
+            "evidence": _evidence(
+                "Recruiter search results",
+                f"https://www.google.com/search?{urlencode({'q': query})}",
+            ),
+        }
     return _mock_review_result(domain, fee_demanded or 0)
 
 
 def fetch(company: str | None = None, recruiter_name: str | None = None, domain: str | None = None) -> Dict[str, Any]:
     if not USE_MOCKS:
         try:
-            if recruiter_name:
-                return _run_recruiter_fetch(recruiter_name, domain)
             if company:
                 return _run_company_fetch(company, domain)
+            if domain:
+                return _run_company_fetch(None, domain)
+            if recruiter_name:
+                return _error_result("Recruiter verification uses TinyFish Search.", 15)
             return _error_result("A company or recruiter was not provided.", 15)
         except Exception:
             return _error_result("TinyFish Fetch check failed.", 15)
     if recruiter_name:
-        return _mock_recruiter_result(recruiter_name, domain)
+        return _error_result("Recruiter verification uses TinyFish Search.", 15)
     if company or domain:
         return _mock_company_result(company, domain)
     return {

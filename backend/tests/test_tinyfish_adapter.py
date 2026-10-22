@@ -157,6 +157,52 @@ def test_company_page_check_uses_fetch_adapter(monkeypatch):
     assert check.tool_used == "TinyFish Fetch"
 
 
+def test_company_none_with_domain_warns_when_fetch_has_no_content(monkeypatch):
+    fetch = FakeFetch(SimpleNamespace(results=[], errors=[SimpleNamespace(error="empty_content")]))
+    monkeypatch.setattr(tinyfish_client, "USE_MOCKS", False)
+    monkeypatch.setattr(tinyfish_client, "_create_client", lambda: SimpleNamespace(fetch=fetch))
+
+    check = asyncio.run(
+        verification_checks.run_check_company_page(None, "internship-portal.xyz")
+    )
+
+    assert fetch.calls[0]["urls"] == ["https://internship-portal.xyz"]
+    assert check.status == "warn"
+    assert check.summary == "The claimed domain could not be loaded or has no company page; treat as suspicious."
+    assert check.risk_points > 0
+
+
+def test_company_none_and_domain_none_returns_specific_error(monkeypatch):
+    def unexpected_fetch(**kwargs):
+        raise AssertionError("Fetch should not be called without a company or domain")
+
+    monkeypatch.setattr(verification_checks, "fetch", unexpected_fetch)
+
+    check = asyncio.run(verification_checks.run_check_company_page(None, None))
+
+    assert check.status == "error"
+    assert check.summary == "No company name or domain was found in the offer."
+    assert check.risk_points == 0
+
+
+def test_recruiter_search_failure_has_readable_reason(monkeypatch):
+    class FailingSearch:
+        def query(self, **kwargs):
+            raise RuntimeError("private upstream error detail")
+
+    monkeypatch.setattr(tinyfish_client, "USE_MOCKS", False)
+    monkeypatch.setattr(tinyfish_client, "_create_client", lambda: SimpleNamespace(search=FailingSearch()))
+
+    check = asyncio.run(
+        verification_checks.run_check_recruiter("Priya Sharma", "internship-portal.xyz")
+    )
+
+    assert check.status == "error"
+    assert check.summary == "Could not verify recruiter online (the source blocked automated access)."
+    assert check.risk_points == 0
+    assert "private upstream error detail" not in check.summary
+
+
 def test_adapter_timeout_becomes_error_result(monkeypatch):
     monkeypatch.setattr(verification_checks, "AGENT_TIMEOUT_SECONDS", 0.01)
 

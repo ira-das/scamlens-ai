@@ -87,7 +87,16 @@ async def run_check_domain(domain: str) -> CheckResult:
     return _check_result("Domain Age & Registration", "TinyFish Web Agent", raw, 25)
 
 
-async def run_check_company_page(company: str, domain: str | None = None) -> CheckResult:
+async def run_check_company_page(company: str | None, domain: str | None = None) -> CheckResult:
+    if not company and not domain:
+        return CheckResult(
+            name="Company & Careers Page Check",
+            tool_used="TinyFish Fetch",
+            status="error",
+            summary="No company name or domain was found in the offer.",
+            risk_points=0,
+            max_points=10,
+        )
     raw = await _call_adapter(
         fetch,
         FETCH_TIMEOUT_SECONDS,
@@ -95,18 +104,31 @@ async def run_check_company_page(company: str, domain: str | None = None) -> Che
         company=company,
         domain=domain,
     )
+    if raw.get("status") == "error" and domain:
+        raw = {
+            "status": "warn",
+            "summary": "The claimed domain could not be loaded or has no company page; treat as suspicious.",
+            "risk_points": 5,
+            "max_points": 10,
+            "evidence": [],
+        }
     return _check_result("Company & Careers Page Check", "TinyFish Fetch", raw, 10)
 
 
-async def run_check_recruiter(recruiter_name: str, domain: str) -> CheckResult:
+async def run_check_recruiter(
+    recruiter_name: str,
+    domain: str | None,
+    company: str | None = None,
+) -> CheckResult:
     raw = await _call_adapter(
-        fetch,
-        FETCH_TIMEOUT_SECONDS,
+        search,
+        SEARCH_TIMEOUT_SECONDS,
         15,
         recruiter_name=recruiter_name,
+        company=company,
         domain=domain,
     )
-    return _check_result("Recruiter Verification", "TinyFish Fetch", raw, 15)
+    return _check_result("Recruiter Verification", "TinyFish Search", raw, 15)
 
 
 async def run_check_scam_reports(domain: str, fee_demanded: int) -> CheckResult:
@@ -161,7 +183,7 @@ async def run_all_checks(claims: Dict[str, Any]) -> List[CheckResult]:
             risk_points=0,
             max_points=10,
         )),
-        run_check_recruiter(recruiter_name, domain) if recruiter_name and domain else asyncio.sleep(0, result=CheckResult(
+        run_check_recruiter(recruiter_name, domain, company) if recruiter_name and (company or domain) else asyncio.sleep(0, result=CheckResult(
             name="Recruiter Verification",
             tool_used="TinyFish Fetch",
             status="error",
